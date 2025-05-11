@@ -1,22 +1,18 @@
-# Tapapp/api/main.py
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import joblib
 import numpy as np
-import pandas as pd # Pandas is needed if your scaler expects a DataFrame with column names
+import pandas as pd
+import os
 
 app = FastAPI()
 
 # --- Load the model and scaler when the API starts ---
-MODEL_PATH = "rf_timetoline_model.joblib"
-SCALER_PATH = "timetoline_scaler.joblib"
+# IMPORTANT: The code will look in multiple locations
 model = None
 scaler = None
 
 # Define the expected input features from Flutter
-# IMPORTANT: The order here MUST match the order your Flutter app sends them
-# AND the order your model was trained on in the notebook.
 FEATURE_ORDER = [
     'BoatSpeed (m/s)', 'BoatAngle (deg)', 'WindSpeed (m/s)', 'WindAngle (deg)',
     'AccelX (m/s^2)', 'AccelY (m/s^2)', 'AccelZ (m/s^2)',
@@ -27,19 +23,49 @@ FEATURE_ORDER = [
 @app.on_event("startup")
 async def load_model_and_scaler():
     global model, scaler
-    try:
-        model = joblib.load(MODEL_PATH)
-        scaler = joblib.load(SCALER_PATH)
-        print("INFO:     Model and scaler loaded successfully.")
-    except FileNotFoundError:
-        print(f"ERROR:    Model or scaler file not found. Searched for '{MODEL_PATH}' and '{SCALER_PATH}'.")
-        print("          Ensure these files are in the same directory as main.py.")
-        model = None # Ensure they are None if loading fails
-        scaler = None
-    except Exception as e:
-        print(f"ERROR:    Error loading model or scaler: {e}")
-        model = None
-        scaler = None
+    
+    # List of possible locations for model files
+    model_paths = [
+        "rf_timetoline_model.joblib",  # Current directory (Render default)
+        "app/rf_timetoline_model.joblib",  # app subdirectory
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "rf_timetoline_model.joblib"),  # Same directory as this file
+    ]
+    
+    scaler_paths = [
+        "timetoline_scaler.joblib",  # Current directory (Render default)
+        "app/timetoline_scaler.joblib",  # app subdirectory
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "timetoline_scaler.joblib"),  # Same directory as this file
+    ]
+    
+    # Print the current directory for debugging
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"This file is located at: {os.path.abspath(__file__)}")
+    
+    # Try loading the model
+    for path in model_paths:
+        try:
+            print(f"Attempting to load model from: {path}")
+            model = joblib.load(path)
+            print(f"SUCCESS: Model loaded from {path}")
+            break
+        except Exception as e:
+            print(f"FAILED: Could not load model from {path}: {e}")
+    
+    # Try loading the scaler
+    for path in scaler_paths:
+        try:
+            print(f"Attempting to load scaler from: {path}")
+            scaler = joblib.load(path)
+            print(f"SUCCESS: Scaler loaded from {path}")
+            break
+        except Exception as e:
+            print(f"FAILED: Could not load scaler from {path}: {e}")
+    
+    # Final check
+    if model is None:
+        print("ERROR: Could not load model from any location")
+    if scaler is None:
+        print("ERROR: Could not load scaler from any location")
 
 class PredictionInput(BaseModel):
     # List of 13 feature values. Flutter should send them in the FEATURE_ORDER.
@@ -52,7 +78,14 @@ class PredictionOutput(BaseModel):
 
 @app.get("/")
 def read_root():
-    return {"message": "TapApp API for Time to Burn Prediction is running"}
+    model_status = "loaded" if model is not None else "not loaded"
+    scaler_status = "loaded" if scaler is not None else "not loaded"
+    
+    return {
+        "message": "TapApp API for Time to Burn Prediction is running",
+        "model_status": model_status,
+        "scaler_status": scaler_status
+    }
 
 @app.post("/predict_time_to_line_raw/", response_model=PredictionOutput)
 async def predict_raw_time_to_line(input_data: PredictionInput):
@@ -106,18 +139,3 @@ async def predict_raw_time_to_line(input_data: PredictionInput):
         # Consider logging the input_data.features as well for debugging
         print(f"DEBUG:    Input features received: {input_data.features}")
         raise HTTPException(status_code=500, detail=error_msg)
-
-# You can keep your existing /calibrate_boat and /calculate_ttb endpoints if they are still needed
-# for other functionalities or if you plan to use them later.
-# If not, you can remove them to simplify the API.
-
-# Example of how you might have other endpoints:
-# @app.post("/calibrate_boat/")
-# async def calibrate_boat_endpoint(data: dict):
-#     # Your existing calibration logic
-#     return {"message": "Calibration data received - placeholder"}
-
-# @app.post("/calculate_ttb/")
-# async def calculate_ttb_endpoint(data: dict):
-#     # Your existing TTB calculation logic (if different from the raw prediction)
-#     return {"time_to_burn": 120, "boat_speed": 5.0} # Placeholder
